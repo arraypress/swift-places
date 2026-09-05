@@ -143,10 +143,11 @@ cannot be tested headless).
 
 ## Requirements
 
-macOS 14+ / iOS 16+ / tvOS 16+ / watchOS 9+ / visionOS 1+ · Swift 6 · no
-dependencies. The macOS 26 address API is used where present and fallen back on
-below it, so there are no deprecation warnings on a modern SDK and no floor
-raise on an older one.
+macOS 26+ / iOS 26+ / tvOS 26+ / watchOS 26+ / visionOS 26+ · Swift 6 · no
+dependencies. The floor is 26 because geocoding goes through
+`MKGeocodingRequest` and addresses through `MKAddress`, both new in 26 —
+that is what puts every call in one error domain. Consumers must declare the
+same floor: a package on macOS 14 will not resolve this one.
 
 MapKit is rate-limited per app. The limit is undocumented; exceeding it
 surfaces as `PlacesError.throttled`.
