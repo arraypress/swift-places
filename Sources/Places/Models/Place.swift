@@ -30,9 +30,14 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
     public let identifier: String?
     public let name: String?
     public let coordinate: Coordinate
-    /// A single-line address.
+    /// A single-line address — "10 Downing Street, London, SW1A 2AA, England".
     public let address: String?
-    /// The parts, where the OS breaks them out.
+    /// The short form MapKit shows under a pin — "10 Downing Street, London".
+    public let shortAddress: String?
+    /// The city with enough context to place it — "London, England".
+    public let cityWithContext: String?
+    /// The parts, where the OS breaks them out. `street` is the number and
+    /// road only — "10 Downing Street".
     public let street: String?
     public let locality: String?
     public let administrativeArea: String?
@@ -47,6 +52,10 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
     public let timeZone: String?
     /// Whether this is the device's own location.
     public let isCurrentLocation: Bool
+    /// Other identifiers MapKit knows this place by (macOS 15+). A place
+    /// merged from several sources can have more than one; any of them
+    /// resolves through ``Places/place(identifier:)``.
+    public let alternateIdentifiers: [String]
 
     /// Metres from wherever the search was centred. Filled in by the search,
     /// not by MapKit.
@@ -54,13 +63,7 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
 
     init?(_ item: MKMapItem, from origin: Coordinate? = nil) {
         // The coordinate is the one thing a place cannot be without.
-        let raw: CLLocationCoordinate2D
-        if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-            raw = item.location.coordinate
-        } else {
-            raw = item.placemark.coordinate
-        }
-        guard let coordinate = Coordinate(raw) else { return nil }
+        guard let coordinate = Coordinate(item.location.coordinate) else { return nil }
         self.coordinate = coordinate
 
         self.name = item.name
@@ -70,14 +73,13 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
         self.isCurrentLocation = item.isCurrentLocation
         self.category = item.pointOfInterestCategory.flatMap(PointOfInterest.init)
 
-        if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *) {
-            self.identifier = item.identifier?.rawValue
-        } else {
-            self.identifier = nil
-        }
+        self.identifier = item.identifier?.rawValue
+        self.alternateIdentifiers = item.alternateIdentifiers.map(\.rawValue).sorted()
 
         let parts = Place.address(of: item)
         self.address = parts.full
+        self.shortAddress = parts.short
+        self.cityWithContext = parts.cityWithContext
         self.street = parts.street
         self.locality = parts.locality
         self.administrativeArea = parts.administrativeArea
@@ -90,28 +92,39 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
 
     /// Reads the address through whichever API this OS has.
     private static func address(of item: MKMapItem) -> (
-        full: String?, street: String?, locality: String?,
+        full: String?, short: String?, cityWithContext: String?, street: String?, locality: String?,
         administrativeArea: String?, postalCode: String?, country: String?, countryCode: String?
     ) {
-        if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-            let representations = item.addressRepresentations
-            return (
-                full: item.address?.fullAddress,
-                // The modern API exposes the city and region as names rather
-                // than as a postal breakdown; the finer parts are not offered.
-                street: item.address?.shortAddress,
-                locality: representations?.cityName,
-                administrativeArea: representations?.regionName,
-                postalCode: nil,
-                country: nil,
-                countryCode: nil
-            )
-        }
+        // MEASURED 2026-09-05 on "10 Downing Street, London", macOS 27.
+        //
+        // The modern API is better for the FORMATTED string and worse for the
+        // STRUCTURED parts, so each is taken from where it is right:
+        //
+        //   MKAddress.fullAddress  "10 Downing Street, London, SW1A 2AA, England"
+        //                          — includes the postcode; the postal
+        //                            formatter's output does not.
+        //
+        //   MKAddressRepresentations is NOT usable for components:
+        //     cityName   "City of Westminster, London"  (placemark: "London")
+        //     regionName "United Kingdom"               — that is the COUNTRY,
+        //                not the region. Mapping it to administrativeArea, as
+        //                this once did, reported England as United Kingdom.
+        //   It also offers no postcode, country or country code at all.
+        //
+        // `placemark` is deprecated as of macOS 26 with no replacement that
+        // carries these fields, so it stays until one exists.
         let placemark = item.placemark
-        let postal = placemark.postalAddress
+        let formatted = item.address?.fullAddress ?? placemark.postalAddress.map {
+            CNPostalAddressFormatter.string(from: $0, style: .mailingAddress)
+                .replacingOccurrences(of: "\n", with: ", ")
+        }
         return (
-            full: postal.map { CNPostalAddressFormatter.string(from: $0, style: .mailingAddress)
-                .replacingOccurrences(of: "\n", with: ", ") },
+            full: formatted,
+            // shortAddress is "10 Downing Street, London" — number, road AND
+            // city. It is the pin label, not the street, so it gets its own
+            // field; `street` stays the number and road from the placemark.
+            short: item.address?.shortAddress,
+            cityWithContext: item.addressRepresentations?.cityWithContext,
             street: placemark.thoroughfare.map { street in
                 placemark.subThoroughfare.map { "\($0) \(street)" } ?? street
             },
@@ -125,16 +138,20 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
 
     /// A place built by hand, for tests and for callers assembling one.
     public init(identifier: String? = nil, name: String?, coordinate: Coordinate,
-                address: String? = nil, street: String? = nil, locality: String? = nil,
+                address: String? = nil, shortAddress: String? = nil, cityWithContext: String? = nil,
+                street: String? = nil, locality: String? = nil,
                 administrativeArea: String? = nil, postalCode: String? = nil,
                 country: String? = nil, countryCode: String? = nil,
                 phoneNumber: String? = nil, url: String? = nil,
                 category: PointOfInterest? = nil, timeZone: String? = nil,
-                isCurrentLocation: Bool = false, distance: Double? = nil) {
+                isCurrentLocation: Bool = false, alternateIdentifiers: [String] = [],
+                distance: Double? = nil) {
         self.identifier = identifier
         self.name = name
         self.coordinate = coordinate
         self.address = address
+        self.shortAddress = shortAddress
+        self.cityWithContext = cityWithContext
         self.street = street
         self.locality = locality
         self.administrativeArea = administrativeArea
@@ -146,6 +163,7 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
         self.category = category
         self.timeZone = timeZone
         self.isCurrentLocation = isCurrentLocation
+        self.alternateIdentifiers = alternateIdentifiers
         self.distance = distance
     }
 

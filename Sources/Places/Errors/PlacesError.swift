@@ -23,6 +23,13 @@ public enum PlacesError: Error, LocalizedError, Sendable, Equatable {
     case invalidCoordinate(latitude: Double, longitude: Double)
     /// A search area that is not an area.
     case invalidRegion(String)
+    /// Autocomplete did not answer in time.
+    ///
+    /// `MKLocalSearchCompleter` reports through a delegate driven by a run
+    /// loop; with no run loop it simply never calls back. This library spins
+    /// one, so a timeout means the network is slow — not that a run loop is
+    /// missing.
+    case timedOut
     /// MapKit failed for a reason of its own.
     case mapKit(code: Int, message: String)
 
@@ -38,6 +45,8 @@ public enum PlacesError: Error, LocalizedError, Sendable, Equatable {
             return "\(latitude), \(longitude) is not a coordinate"
         case .invalidRegion(let why):
             return "bad search area: \(why)"
+        case .timedOut:
+            return "autocomplete did not answer in time"
         case .mapKit(let code, let message):
             return "\(message) (MKError \(code))"
         }

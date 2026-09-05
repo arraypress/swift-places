@@ -40,76 +40,106 @@ app's job.
 ## Finding places
 
 ```swift
-try await places.nearby([.restaurant], near: here, radiusMetres: 800)
-try await places.search("Monmouth Coffee", near: here)
-try await places.search("SW1A 2AA", resultTypes: [.address])
-try await places.search("bar", near: here, excluding: [.nightlife])
+let places = Places()
+
+try await places.search("coffee", near: here, radiusMetres: 800)
+try await places.nearby([.restaurant, .cafe], near: here)          // MKLocalPointsOfInterestRequest
+try await places.suggest("Trafalg", near: here)                    // autocomplete, as you type
+try await places.geocode("10 Downing Street, London")              // address → place
+try await places.reverseGeocode(here)                              // place → address
+try await places.place(identifier: earlier.identifier!)            // the same place, later
 ```
 
-**84 categories**, generated from `MKPointOfInterestCategory.h` in the installed
-SDK rather than typed by hand, so the list cannot drift from Apple's. They are
-built from their raw strings rather than the static constants — several are
-gated to a newer OS, and going through the constants would either drop them
-from the API or force the whole package up to macOS 27.
+**The region is a hint unless you say otherwise.** MapKit ranks by the region
+you give but will still return a strong match outside it — right for a map
+that pans, wrong for "within walking distance". `regionPriority: .required`
+confines results to the region. Measured: a 400 m pizza search near Trafalgar
+Square reaches Mayfair with `.preferred` and stays inside with `.required`.
 
-Results come back **nearest first** when you give a centre, with `distance` in
-metres filled in. MapKit's own order is relevance, which is a different
-question.
+**Addresses can be narrowed by kind.** `addressComponents: [.locality]` turns
+a search for "Richmond" into towns called Richmond, not roads and postcodes
+containing the word. It wraps `MKAddressFilter`; `search` and `suggest` both
+take it.
 
-MapKit's filter is *including* **or** *excluding*, never both — pass both and
-including wins.
+**`nearby` uses the dedicated request**, not a text query built from
+category names. On the same 500 m circle it returned 48 restaurants and cafés
+against the text query's 25, and it honours the radius — the text query
+matches words, not a region.
+
+**Suggestions say where they matched.** A `Suggestion` carries MapKit's
+highlight ranges for the title and subtitle, and `markedTitle()` renders them
+— `**Trafalg**ar Square` — which is what a search field emboldens. A
+suggestion is not a place: it has no coordinate. Feed its `searchText` back
+into `search`.
+
+**`searchResults` adds the bounding region** — the rectangle MapKit says
+covers every result, which is what a map should show. `search` is the same
+call returning only the places.
+
+**Identifiers are stable; names and coordinates are not.** Every place from
+a search carries MapKit's `identifier` (and any `alternateIdentifiers`).
+`place(identifier:)` resolves one later through `MKMapItemRequest` — store
+that, not a name to search for again.
+
+**Geocoding takes a bias and a language.** `geocode("Springfield", near:
+here)` prefers the nearby one; `locale: Locale(identifier: "de_DE")` returns
+the address strings in German. Both go through `MKGeocodingRequest` and
+`MKReverseGeocodingRequest`, MapKit's own geocoder as of macOS 26, so every
+call in this library fails in one error domain.
+
+### What a Place carries
+
+`address` is the full single line ("10 Downing Street, London, SW1A 2AA,
+England"), `shortAddress` the pin label ("10 Downing Street, London"),
+`cityWithContext` the city placed ("London, England"), and `street` the
+number and road only ("10 Downing Street"). The structured parts — locality,
+administrative area, postcode, country, country code — come from the
+placemark, because measured on macOS 27 the modern `MKAddressRepresentations`
+offers no postcode or country at all and reports the **country** as the
+region: `regionName` is "United Kingdom" where the placemark's administrative
+area is "England". Each field is taken from the API that has it right.
 
 ## Directions
 
 ```swift
-let routes = try await places.route(from: a, to: b, mode: .automobile,
-                                    tolls: .avoid, highways: .any)
-routes[0].distance          // metres
-routes[0].travelTime        // seconds
-routes[0].steps             // turn-by-turn
-routes[0].hasTolls
-routes[0].advisoryNotices   // ["Toll required.", "London ULEZ covers all boroughs"]
-routes[0].polyline          // thinned to 100 points; 0 keeps all ~1,700
+try await places.route(from: a, to: b, mode: .cycling, tolls: .avoid)
+try await places.estimate(from: a, to: b, mode: .transit)
 ```
 
-`advisoryNotices` is worth surfacing — the ULEZ and toll warnings live nowhere
-else in the response.
+A `Route` has its name, distance, time, tolls and motorways, MapKit's advisory
+notices (the ULEZ, in London), the steps, and the geometry thinned to
+`polylineLimit` points. Each `RouteStep` has its own instruction, notice,
+distance, mode and geometry — what a turn-by-turn view draws for the current
+manoeuvre.
 
-## Transit is estimate-only, and that is Apple's rule
-
-```swift
-try await places.estimate(from: a, to: b, mode: .transit)   // 27 min, 7.6 km
-try await places.route(from: a, to: b, mode: .transit)      // throws
-```
-
-Apple's header says it inline — `MKDirectionsTransportTypeTransit … // Only
-supported for ETA calculations`. Ask for a route anyway and MapKit answers
-`MKErrorDomain 5`, which reads like an outage rather than a documented limit;
-this throws `.routeStepsUnavailable(.transit)` instead.
-
-The estimate is real and worth having: measured London Paddington → Liverpool
-Street at **27 minutes by transit against 46 by car**. `automobile`, `walking`
-and `cycling` all give full routes *and* estimates.
-
-## Two error domains
-
-Search and directions fail in `MKErrorDomain`; **geocoding fails in
-`kCLErrorDomain`**. A client reading only the first reports "no such address" as
-an unexplained error — found by a live test here, and fixed. Throttling gets its
-own case, because it means back off rather than retry.
+**Cycling comes back labelled `automobile`.** MapKit computes a genuinely
+cycling-aware route — different roads, an advisory reading "Cycle routes and
+main roads" — and stamps the result `automobile`. `Route.mode` is the mode
+you asked for; `reportedMode` keeps MapKit's label so the discrepancy is
+visible rather than hidden.
 
 ## Tested
 
-25 tests. Eighteen offline — the generated category table, coordinate parsing,
-the filter's including-wins rule, polyline thinning keeping both ends, and both
-error domains. Seven run against MapKit itself, skipped by default because it
-throttles per app:
+45 tests: 26 offline (models, filters, the 84-category table generated from
+Apple's header, the run-loop-backed completer's shape) and 19 live against
+MapKit, run with `PLACES_LIVE=1 swift test --filter LiveTests`. The live
+suite is where the numbers in this README come from — `.required` staying
+inside 400 m where `.preferred` reaches further, 48 places against 25, the
+German locale naming the country in German, cycling labelled `automobile`,
+a place found again by its identifier — and it is what caught the completer
+hanging without a run loop, and the modern address API reporting a country
+as a region.
 
-```console
-$ PLACES_LIVE=1 swift test --filter LiveTests
-```
-
-All seven passed 2026-09-05.
+Audited against the macOS 27 SDK headers on 2026-09-06: every data-bearing
+MapKit request — `MKLocalSearch`, `MKLocalPointsOfInterestRequest`,
+`MKLocalSearchCompleter`, `MKDirections` (routes and ETAs), `MKGeocodingRequest`,
+`MKReverseGeocodingRequest`, `MKMapItemRequest` — and every field of
+`MKMapItem`, `MKRoute`, `MKRoute.Step`, `MKETAResponse` and
+`MKLocalSearchCompletion` is reachable from this library. Not wrapped, by
+choice: `MKMapSnapshotter` and Look Around (they produce images, a different
+tool), `openInMaps` (an app concern; `Place.mapsURL` is the headless form),
+and `MKMapItem.forCurrentLocation()` (needs location permission, so it
+cannot be tested headless).
 
 ## Requirements
 

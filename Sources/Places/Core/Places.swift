@@ -68,7 +68,35 @@ public struct Places: Sendable {
                        categories: [PointOfInterest] = [],
                        excluding: [PointOfInterest] = [],
                        resultTypes: ResultTypes = [.address, .pointOfInterest],
+                       addressComponents: AddressComponents = [],
+                       excludingAddressComponents: AddressComponents = [],
+                       regionPriority: RegionPriority = .preferred,
                        limit: Int = 25) async throws -> [Place] {
+        try await searchResults(query, near: near, radiusMetres: radiusMetres, categories: categories,
+                                excluding: excluding, resultTypes: resultTypes,
+                                addressComponents: addressComponents,
+                                excludingAddressComponents: excludingAddressComponents,
+                                regionPriority: regionPriority, limit: limit).places
+    }
+
+    /// The same search, with the rectangle MapKit says covers every result.
+    ///
+    /// - Parameters:
+    ///   - regionPriority: `.preferred` lets MapKit rank by the region and
+    ///     still return a strong match outside it; `.required` confines
+    ///     results to the region. See ``RegionPriority``.
+    ///   - addressComponents: When asking for addresses, which kinds — towns
+    ///     only, say. Empty means any. Mutually exclusive with `excludingAddressComponents`.
+    public func searchResults(_ query: String,
+                              near: Coordinate? = nil,
+                              radiusMetres: Double = Places.defaultRadiusMetres,
+                              categories: [PointOfInterest] = [],
+                              excluding: [PointOfInterest] = [],
+                              resultTypes: ResultTypes = [.address, .pointOfInterest],
+                              addressComponents: AddressComponents = [],
+                              excludingAddressComponents: AddressComponents = [],
+                              regionPriority: RegionPriority = .preferred,
+                              limit: Int = 25) async throws -> SearchResults {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw PlacesError.invalidRegion("no query") }
         guard radiusMetres > 0 else { throw PlacesError.invalidRegion("radius must be positive") }
@@ -76,26 +104,62 @@ public struct Places: Sendable {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = trimmed
         request.resultTypes = resultTypes.searchResultType
-        if let near { request.region = near.region(radiusMetres: radiusMetres) }
+        if let near {
+            request.region = near.region(radiusMetres: radiusMetres)
+            request.regionPriority = regionPriority.mapKit
+        }
         request.pointOfInterestFilter = Places.filter(including: categories, excluding: excluding)
+        request.addressFilter = AddressComponents.filter(including: addressComponents, excluding: excludingAddressComponents)
 
-        return try await run(request, near: near, limit: limit)
+        return try await runResults(MKLocalSearch(request: request), near: near, limit: limit)
+    }
+
+    /// A place by the stable identifier MapKit gave it in an earlier result.
+    ///
+    /// `MKMapItemRequest`. The identifier is ``Place/identifier`` — what to
+    /// store instead of a name-and-coordinate when a place must be found
+    /// again later; names change and coordinates drift.
+    public func place(identifier: String) async throws -> Place {
+        let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw PlacesError.invalidRegion("no identifier") }
+        guard let mapKitIdentifier = MKMapItem.Identifier(rawValue: trimmed) else {
+            throw PlacesError.invalidRegion("not a MapKit place identifier")
+        }
+        let request = MKMapItemRequest(mapItemIdentifier: mapKitIdentifier)
+        do {
+            let item = try await request.mapItem
+            guard let place = Place(item) else { throw PlacesError.noResults }
+            return place
+        } catch let error as PlacesError {
+            throw error
+        } catch {
+            throw PlacesError.from(error)
+        }
     }
 
     /// Places of a kind, near a point — "restaurants around here".
     ///
-    /// MapKit has no category-only search, so the categories are also used as
-    /// the query text. That is what makes `nearby([.restaurant])` behave the
-    /// way a caller expects rather than returning nothing.
+    /// Uses `MKLocalPointsOfInterestRequest`, MapKit's dedicated
+    /// category-around-a-point search, rather than joining the category names
+    /// into a text query. Measured 2026-09-05 over a 500 m circle on Trafalgar
+    /// Square asking for restaurants and cafés: the dedicated request returned
+    /// **48 results against the text query's 25**. The text query also drifts
+    /// outside the radius, because it is matching words rather than a region.
+    ///
+    /// - Note: MapKit caps the radius at
+    ///   `MKLocalPointsOfInterestRequest.maxRadius`; anything larger is clamped
+    ///   rather than rejected, so a wide search quietly narrows.
     public func nearby(_ categories: [PointOfInterest],
                        near: Coordinate,
                        radiusMetres: Double = Places.defaultRadiusMetres,
                        limit: Int = 25) async throws -> [Place] {
         guard !categories.isEmpty else { throw PlacesError.invalidRegion("no categories") }
-        let query = categories.map(\.displayName).joined(separator: " ")
-        return try await search(query, near: near, radiusMetres: radiusMetres,
-                                categories: categories,
-                                resultTypes: [.pointOfInterest], limit: limit)
+        guard radiusMetres > 0 else { throw PlacesError.invalidRegion("radius must be positive") }
+
+        let radius = min(radiusMetres, MKLocalPointsOfInterestRequest.maxRadius)
+        let request = MKLocalPointsOfInterestRequest(center: near.clCoordinate, radius: radius)
+        request.pointOfInterestFilter = Places.filter(including: categories, excluding: [])
+        return try await run(MKLocalSearch(request: request), near: near, limit: limit)
     }
 
     /// Builds MapKit's filter. Including wins: the filter is one or the other.
@@ -110,10 +174,15 @@ public struct Places: Sendable {
         return nil
     }
 
-    private func run(_ request: MKLocalSearch.Request,
+    private func run(_ search: MKLocalSearch,
                      near: Coordinate?, limit: Int) async throws -> [Place] {
+        try await runResults(search, near: near, limit: limit).places
+    }
+
+    private func runResults(_ search: MKLocalSearch,
+                            near: Coordinate?, limit: Int) async throws -> SearchResults {
         do {
-            let response = try await MKLocalSearch(request: request).start()
+            let response = try await search.start()
             var places = response.mapItems.compactMap { Place($0, from: near) }
             guard !places.isEmpty else { throw PlacesError.noResults }
             // Nearest first when there is a centre to measure from; MapKit's
@@ -121,7 +190,8 @@ public struct Places: Sendable {
             if near != nil {
                 places.sort { ($0.distance ?? .greatestFiniteMagnitude) < ($1.distance ?? .greatestFiniteMagnitude) }
             }
-            return limit > 0 ? Array(places.prefix(limit)) : places
+            return SearchResults(places: limit > 0 ? Array(places.prefix(limit)) : places,
+                                 boundingRegion: Region(response.boundingRegion))
         } catch let error as PlacesError {
             throw error
         } catch {
@@ -151,7 +221,7 @@ public struct Places: Sendable {
                                         arrival: arrival, tolls: tolls, highways: highways)
         do {
             let response = try await MKDirections(request: request).calculate()
-            let routes = response.routes.map { Route($0, polylineLimit: polylineLimit) }
+            let routes = response.routes.map { Route($0, requested: mode, polylineLimit: polylineLimit) }
             guard !routes.isEmpty else { throw PlacesError.noResults }
             return routes
         } catch let error as PlacesError {
@@ -189,36 +259,94 @@ public struct Places: Sendable {
         request.requestsAlternateRoutes = alternates
         request.departureDate = departure
         request.arrivalDate = arrival
-        if #available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *) {
-            request.tollPreference = tolls.preference
-            request.highwayPreference = highways.preference
-        }
+        request.tollPreference = tolls.preference
+        request.highwayPreference = highways.preference
         return request
     }
 
     /// A map item for a bare coordinate.
     ///
-    /// `MKMapItem(placemark:)` was deprecated in macOS 26 in favour of
-    /// `init(location:address:)`, so both are here.
+    /// `MKMapItem(placemark:)` is deprecated as of macOS 26; this is the
+    /// replacement.
     static func mapItem(_ coordinate: Coordinate) -> MKMapItem {
-        if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-            return MKMapItem(location: coordinate.location, address: nil)
+        MKMapItem(location: coordinate.location, address: nil)
+    }
+
+    // MARK: - Autocomplete
+
+    /// What a half-typed query completes to — the search-field suggestions.
+    ///
+    /// `MKLocalSearchCompleter`, the API a keyboard or search box wants: it is
+    /// built for a partial fragment and answers far faster than a full search,
+    /// because it returns query text rather than resolved places.
+    ///
+    /// A ``Suggestion`` carries **no coordinate**. Feed its
+    /// ``Suggestion/searchText`` back into ``search(_:near:radiusMetres:categories:excluding:resultTypes:limit:)``
+    /// when the user picks one.
+    ///
+    /// - Parameters:
+    ///   - fragment: What has been typed so far.
+    ///   - near: Biases results towards a place. Suggestions are not confined
+    ///     to it — the region is a hint, not a filter.
+    ///   - resultTypes: Addresses, points of interest, or both.
+    public func suggest(_ fragment: String,
+                        near: Coordinate? = nil,
+                        radiusMetres: Double = Places.defaultRadiusMetres,
+                        categories: [PointOfInterest] = [],
+                        excluding: [PointOfInterest] = [],
+                        resultTypes: ResultTypes = [.address, .pointOfInterest],
+                        addressComponents: AddressComponents = [],
+                        excludingAddressComponents: AddressComponents = [],
+                        regionPriority: RegionPriority = .preferred,
+                        limit: Int = 25) async throws -> [Suggestion] {
+        let trimmed = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw PlacesError.invalidRegion("nothing typed") }
+        do {
+            let suggestions = try await Completer().suggestions(
+                for: trimmed, near: near, radiusMetres: radiusMetres,
+                regionPriority: regionPriority, resultTypes: resultTypes,
+                categories: categories, excluding: excluding,
+                addressComponents: addressComponents, excludingAddressComponents: excludingAddressComponents)
+            // An empty completion list is a normal answer for a fragment that
+            // matches nothing — not an error, unlike a search that found none.
+            return limit > 0 ? Array(suggestions.prefix(limit)) : suggestions
+        } catch let error as PlacesError {
+            throw error
+        } catch {
+            throw PlacesError.from(error)
         }
-        return MKMapItem(placemark: MKPlacemark(coordinate: coordinate.clCoordinate))
     }
 
     // MARK: - Geocoding
 
     /// An address to coordinates.
     ///
-    /// CoreLocation rather than MapKit: `CLGeocoder` answers a postal address
-    /// directly, where a local search would rank it against businesses.
-    public func geocode(_ address: String) async throws -> [Place] {
+    /// `MKGeocodingRequest`, MapKit's own geocoder (macOS/iOS 26+), rather
+    /// than `CLGeocoder`. It answers a postal address directly, where a local
+    /// search would rank it against businesses — and it fails in
+    /// **`MKErrorDomain`**, so every call in this library now reports through
+    /// one error domain instead of two. Measured 2026-09-05: identical
+    /// coordinates to `CLGeocoder` for "10 Downing Street, London", a fuller
+    /// address string, and nonsense fails `MKErrorDomain 4` where CoreLocation
+    /// gave `kCLErrorDomain 8`.
+    ///
+    /// - Parameters:
+    ///   - near: Biases ambiguous addresses — "Springfield" near here.
+    ///   - locale: The language of the result's address strings. Nil is the
+    ///     system locale.
+    public func geocode(_ address: String,
+                        near: Coordinate? = nil,
+                        radiusMetres: Double = Places.defaultRadiusMetres,
+                        locale: Locale? = nil) async throws -> [Place] {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw PlacesError.invalidRegion("no address") }
+        guard let request = MKGeocodingRequest(addressString: trimmed) else {
+            throw PlacesError.invalidRegion("could not read that address")
+        }
+        if let near { request.region = near.region(radiusMetres: radiusMetres) }
+        request.preferredLocale = locale
         do {
-            let placemarks = try await CLGeocoder().geocodeAddressString(trimmed)
-            let places = placemarks.compactMap(Place.init)
+            let places = try await request.mapItems.compactMap { Place($0) }
             guard !places.isEmpty else { throw PlacesError.noResults }
             return places
         } catch let error as PlacesError {
@@ -229,10 +357,15 @@ public struct Places: Sendable {
     }
 
     /// Coordinates to an address.
-    public func reverseGeocode(_ coordinate: Coordinate) async throws -> [Place] {
+    ///
+    /// - Parameter locale: The language of the address strings. Nil is the system locale.
+    public func reverseGeocode(_ coordinate: Coordinate, locale: Locale? = nil) async throws -> [Place] {
+        guard let request = MKReverseGeocodingRequest(location: coordinate.location) else {
+            throw PlacesError.invalidRegion("not a location on Earth")
+        }
+        request.preferredLocale = locale
         do {
-            let placemarks = try await CLGeocoder().reverseGeocodeLocation(coordinate.location)
-            let places = placemarks.compactMap(Place.init)
+            let places = try await request.mapItems.compactMap { Place($0) }
             guard !places.isEmpty else { throw PlacesError.noResults }
             return places
         } catch let error as PlacesError {

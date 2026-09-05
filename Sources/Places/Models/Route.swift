@@ -20,7 +20,18 @@ public struct Route: Sendable, Codable, Equatable {
     public let distance: Double
     /// Seconds.
     public let travelTime: Double
+    /// The mode this route was ASKED for, which is the one a caller means.
     public let mode: TransportMode
+    /// The mode MapKit labelled the result with.
+    ///
+    /// Usually the same as ``mode``. It is **not** for cycling: a cycling
+    /// request returns a genuinely cycling-aware route — different roads, and
+    /// an advisory like "Cycle routes and main roads" — but MapKit stamps it
+    /// `automobile` (measured 2026-09-05, `transportType` raw value 1 for a
+    /// request of raw value 8). Reporting that verbatim made `--mode cycling`
+    /// answer "automobile", which reads like the request was ignored when it
+    /// was not. Both are kept so the discrepancy is visible, not hidden.
+    public let reportedMode: TransportMode
     /// Whether the route uses a toll road.
     public let hasTolls: Bool
     /// Whether it uses a motorway.
@@ -33,22 +44,18 @@ public struct Route: Sendable, Codable, Equatable {
     /// The route's geometry, thinned to `polylineLimit` points.
     public let polyline: [Coordinate]
 
-    init(_ route: MKRoute, polylineLimit: Int) {
+    init(_ route: MKRoute, requested: TransportMode, polylineLimit: Int) {
         self.name = route.name
         self.distance = route.distance
         self.travelTime = route.expectedTravelTime
-        self.mode = TransportMode(transportType: route.transportType)
+        self.mode = requested
+        self.reportedMode = TransportMode(transportType: route.transportType)
         self.advisoryNotices = route.advisoryNotices
-        if #available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *) {
-            self.hasTolls = route.hasTolls
-            self.hasHighways = route.hasHighways
-        } else {
-            self.hasTolls = false
-            self.hasHighways = false
-        }
+        self.hasTolls = route.hasTolls
+        self.hasHighways = route.hasHighways
         // MapKit's own step list ends with a zero-distance "arrive" entry and
         // often begins with one too; they carry the instruction, so they stay.
-        self.steps = route.steps.map(RouteStep.init)
+        self.steps = route.steps.map { RouteStep($0, polylineLimit: polylineLimit) }
         self.polyline = Route.coordinates(of: route.polyline, limit: polylineLimit)
     }
 
@@ -74,6 +81,7 @@ public struct Route: Sendable, Codable, Equatable {
     }
 
     public init(name: String, distance: Double, travelTime: Double, mode: TransportMode,
+                reportedMode: TransportMode? = nil,
                 hasTolls: Bool = false, hasHighways: Bool = false,
                 advisoryNotices: [String] = [], steps: [RouteStep] = [],
                 polyline: [Coordinate] = []) {
@@ -81,6 +89,7 @@ public struct Route: Sendable, Codable, Equatable {
         self.distance = distance
         self.travelTime = travelTime
         self.mode = mode
+        self.reportedMode = reportedMode ?? mode
         self.hasTolls = hasTolls
         self.hasHighways = hasHighways
         self.advisoryNotices = advisoryNotices
@@ -99,20 +108,26 @@ public struct RouteStep: Sendable, Codable, Equatable {
     public let distance: Double
     /// A step may differ from the route: a drive can include a ferry.
     public let mode: TransportMode
+    /// This step's own geometry, thinned like the route's — what a
+    /// turn-by-turn view draws for the current manoeuvre.
+    public let polyline: [Coordinate]
 
-    init(_ step: MKRoute.Step) {
+    init(_ step: MKRoute.Step, polylineLimit: Int) {
         self.instructions = step.instructions
         self.notice = step.notice
         self.distance = step.distance
         self.mode = TransportMode(transportType: step.transportType)
+        self.polyline = Route.coordinates(of: step.polyline, limit: polylineLimit)
     }
 
     public init(instructions: String, notice: String? = nil,
-                distance: Double, mode: TransportMode = .automobile) {
+                distance: Double, mode: TransportMode = .automobile,
+                polyline: [Coordinate] = []) {
         self.instructions = instructions
         self.notice = notice
         self.distance = distance
         self.mode = mode
+        self.polyline = polyline
     }
 }
 

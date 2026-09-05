@@ -89,16 +89,27 @@ public struct ResultTypes: OptionSet, Sendable, Codable {
     /// Everything the running OS supports.
     public static let all: ResultTypes = [.address, .pointOfInterest, .physicalFeature]
 
-    /// The MapKit value, dropping anything this OS does not know about.
+    /// The MapKit value for a search.
     var searchResultType: MKLocalSearch.ResultType {
         var types: MKLocalSearch.ResultType = []
         if contains(.address) { types.insert(.address) }
         if contains(.pointOfInterest) { types.insert(.pointOfInterest) }
-        if contains(.physicalFeature) {
-            if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *) {
-                types.insert(.physicalFeature)
-            }
-        }
+        if contains(.physicalFeature) { types.insert(.physicalFeature) }
         return types
+    }
+
+    /// The MapKit value for autocomplete.
+    ///
+    /// A separate option set from the search one, with **no physical-feature
+    /// member** — the completer offers addresses, points of interest and
+    /// queries, so a request for mountains and rivers simply has nothing to
+    /// map onto and is dropped rather than faked.
+    var completerResultType: MKLocalSearchCompleter.ResultType {
+        var types: MKLocalSearchCompleter.ResultType = []
+        if contains(.address) { types.insert(.address) }
+        if contains(.pointOfInterest) { types.insert(.pointOfInterest) }
+        // Nothing asked for maps onto a completer type; ask for everything
+        // rather than sending an empty set, which returns nothing at all.
+        return types.isEmpty ? [.address, .pointOfInterest, .query] : types
     }
 }
