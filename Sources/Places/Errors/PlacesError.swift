@@ -33,6 +33,7 @@ public enum PlacesError: Error, LocalizedError, Sendable, Equatable {
     /// MapKit failed for a reason of its own.
     case mapKit(code: Int, message: String)
 
+    /// A one-line reason, for a CLI or a log.
     public var errorDescription: String? {
         switch self {
         case .noResults:

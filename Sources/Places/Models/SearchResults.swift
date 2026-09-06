@@ -13,6 +13,7 @@ import Foundation
 /// returns just the places; this adds MapKit's `boundingRegion`, which is
 /// the rectangle a map should show to fit every result.
 public struct SearchResults: Sendable, Codable, Equatable {
+    /// What was found, in the order MapKit ranked it.
     public let places: [Place]
     /// The rectangle enclosing every result, as MapKit computed it.
     public let boundingRegion: Region?

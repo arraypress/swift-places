@@ -14,6 +14,7 @@ import MapKit
 /// MapKit gives them; ``latitudinalMetres`` and ``longitudinalMetres``
 /// convert at the centre's latitude.
 public struct Region: Sendable, Codable, Equatable {
+    /// The middle of the region.
     public let center: Coordinate
     /// Degrees of latitude covered, top to bottom.
     public let latitudeDelta: Double

@@ -8,6 +8,8 @@
 //  that transit gives instead of a route.
 //
 
+//
+
 import Foundation
 import MapKit
 
@@ -40,6 +42,7 @@ public struct Route: Sendable, Codable, Equatable {
     /// and, in London, the ULEZ. Worth surfacing: they are the part a driver
     /// most wants and no other field carries.
     public let advisoryNotices: [String]
+    /// The turn-by-turn directions, in order.
     public let steps: [RouteStep]
     /// The route's geometry, thinned to `polylineLimit` points.
     public let polyline: [Coordinate]
@@ -95,81 +98,5 @@ public struct Route: Sendable, Codable, Equatable {
         self.advisoryNotices = advisoryNotices
         self.steps = steps
         self.polyline = polyline
-    }
-}
-
-/// One instruction along a route.
-public struct RouteStep: Sendable, Codable, Equatable {
-    /// "Turn right onto Trafalgar Square".
-    public let instructions: String
-    /// A legal or warning notice attached to this step.
-    public let notice: String?
-    /// Metres.
-    public let distance: Double
-    /// A step may differ from the route: a drive can include a ferry.
-    public let mode: TransportMode
-    /// This step's own geometry, thinned like the route's — what a
-    /// turn-by-turn view draws for the current manoeuvre.
-    public let polyline: [Coordinate]
-
-    init(_ step: MKRoute.Step, polylineLimit: Int) {
-        self.instructions = step.instructions
-        self.notice = step.notice
-        self.distance = step.distance
-        self.mode = TransportMode(transportType: step.transportType)
-        self.polyline = Route.coordinates(of: step.polyline, limit: polylineLimit)
-    }
-
-    public init(instructions: String, notice: String? = nil,
-                distance: Double, mode: TransportMode = .automobile,
-                polyline: [Coordinate] = []) {
-        self.instructions = instructions
-        self.notice = notice
-        self.distance = distance
-        self.mode = mode
-        self.polyline = polyline
-    }
-}
-
-/// How long a journey takes, without the turn-by-turn.
-///
-/// This is all transit can give — see ``TransportMode/supportsRouteSteps``.
-public struct Estimate: Sendable, Codable, Equatable {
-    public let mode: TransportMode
-    /// Metres.
-    public let distance: Double
-    /// Seconds.
-    public let travelTime: Double
-    public let departure: Date
-    public let arrival: Date
-
-    init(_ response: MKDirections.ETAResponse) {
-        self.mode = TransportMode(transportType: response.transportType)
-        self.distance = response.distance
-        self.travelTime = response.expectedTravelTime
-        self.departure = response.expectedDepartureDate
-        self.arrival = response.expectedArrivalDate
-    }
-
-    public init(mode: TransportMode, distance: Double, travelTime: Double,
-                departure: Date, arrival: Date) {
-        self.mode = mode
-        self.distance = distance
-        self.travelTime = travelTime
-        self.departure = departure
-        self.arrival = arrival
-    }
-}
-
-extension TransportMode {
-    /// The mode MapKit reported. `MKDirectionsTransportType` is an option set,
-    /// so a response can in principle carry more than one bit; the first that
-    /// matches wins, and anything unrecognised is `.any`.
-    init(transportType: MKDirectionsTransportType) {
-        if transportType.contains(.automobile) { self = .automobile }
-        else if transportType.contains(.walking) { self = .walking }
-        else if transportType.contains(.cycling) { self = .cycling }
-        else if transportType.contains(.transit) { self = .transit }
-        else { self = .any }
     }
 }

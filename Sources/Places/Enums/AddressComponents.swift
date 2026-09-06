@@ -15,9 +15,11 @@ import MapKit
 /// Wraps `MKAddressFilter`, which is an include-list or an exclude-list —
 /// pass one or the other, as with ``PointOfInterest`` filters.
 public struct AddressComponents: OptionSet, Sendable, Codable, Hashable {
+    /// The underlying bits. Required by `OptionSet`.
     public let rawValue: UInt
     public init(rawValue: UInt) { self.rawValue = rawValue }
 
+    /// The country name.
     public static let country = AddressComponents(rawValue: 1 << 0)
     /// A state, province or region.
     public static let administrativeArea = AddressComponents(rawValue: 1 << 1)
@@ -27,8 +29,10 @@ public struct AddressComponents: OptionSet, Sendable, Codable, Hashable {
     public static let locality = AddressComponents(rawValue: 1 << 3)
     /// A neighbourhood.
     public static let subLocality = AddressComponents(rawValue: 1 << 4)
+    /// The postcode or ZIP.
     public static let postalCode = AddressComponents(rawValue: 1 << 5)
 
+    /// Every component at once.
     public static let all: AddressComponents = [.country, .administrativeArea, .subAdministrativeArea, .locality, .subLocality, .postalCode]
 
     var mapKit: MKAddressFilter.Options {

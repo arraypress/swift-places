@@ -33,9 +33,12 @@ public struct Suggestion: Sendable, Codable, Equatable {
 
     /// A run of matched characters.
     public struct Highlight: Sendable, Codable, Equatable {
+        /// Where the matched run starts in the title, in characters.
         public let location: Int
+        /// How many characters it covers.
         public let length: Int
         public init(location: Int, length: Int) { self.location = location; self.length = length }
+        /// The matched run as a range, for highlighting.
         public var range: Range<Int> { location..<(location + length) }
     }
 

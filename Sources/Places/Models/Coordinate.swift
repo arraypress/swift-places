@@ -14,7 +14,9 @@ import MapKit
 /// A plain `Codable`, `Sendable` value — `CLLocationCoordinate2D` is neither,
 /// so passing one across a concurrency boundary or into JSON needs this.
 public struct Coordinate: Sendable, Codable, Equatable, Hashable {
+    /// Degrees north, -90 to 90.
     public let latitude: Double
+    /// Degrees east, -180 to 180.
     public let longitude: Double
 
     /// A coordinate, or `nil` if the numbers are not one.
@@ -41,10 +43,12 @@ public struct Coordinate: Sendable, Codable, Equatable, Hashable {
         self.init(latitude: latitude, longitude: longitude)
     }
 
+    /// The same point as CoreLocation wants it.
     public var clCoordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 
+    /// The same point as a `CLLocation`, for distance arithmetic.
     public var location: CLLocation {
         CLLocation(latitude: latitude, longitude: longitude)
     }

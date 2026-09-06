@@ -27,8 +27,11 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
     /// Falls back to the coordinate, which is stable enough to dedupe on.
     public var id: String { identifier ?? "\(coordinate.latitude),\(coordinate.longitude)" }
 
+    /// MapKit's own id, where the OS provides one. Nil below macOS 15.
     public let identifier: String?
+    /// What the place is called — "10 Downing Street".
     public let name: String?
+    /// Where it is.
     public let coordinate: Coordinate
     /// A single-line address — "10 Downing Street, London, SW1A 2AA, England".
     public let address: String?
@@ -39,12 +42,19 @@ public struct Place: Sendable, Codable, Equatable, Identifiable {
     /// The parts, where the OS breaks them out. `street` is the number and
     /// road only — "10 Downing Street".
     public let street: String?
+    /// The town or city — "London".
     public let locality: String?
+    /// The state, province or country within a union — "England".
     public let administrativeArea: String?
+    /// The postcode or ZIP.
     public let postalCode: String?
+    /// The country name.
     public let country: String?
+    /// The ISO country code — "GB".
     public let countryCode: String?
+    /// The published telephone number, for a business.
     public let phoneNumber: String?
+    /// The place's own website, for a business.
     public let url: String?
     /// What kind of place MapKit says it is.
     public let category: PointOfInterest?
