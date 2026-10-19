@@ -118,9 +118,28 @@ main roads" — and stamps the result `automobile`. `Route.mode` is the mode
 you asked for; `reportedMode` keeps MapKit's label so the discrepancy is
 visible rather than hidden.
 
+### Along the way
+
+```swift
+let route = try await Places(polylineLimit: 0).route(from: a, to: b).first!
+for sample in route.samples(every: 10_000) { /* search around sample.coordinate */ }
+let spot = route.position(of: cafe.coordinate)   // spot.offRoute 400, spot.along 38_000
+```
+
+Two questions MapKit does not answer. `samples(every:)` gives points along the
+geometry, evenly spaced no further apart than asked and always including both
+ends — a 25 km route every 10 km is four points 8.3 km apart, not a stub at the
+end. `position(of:)` gives how far a point is from the line and how far in its
+nearest point is: great-circle cross-track and along-track per segment, the
+segment's end when the foot falls outside it, the nearest segment winning.
+Spherical, so within 0.5% of the ellipsoid — far finer than "38 km in" means.
+Both measure the polyline as returned; build the client with `polylineLimit: 0`
+for the road's own geometry rather than the thinned line.
+
 ## Tested
 
-45 tests: 26 offline (models, filters, the 84-category table generated from
+59 tests: 14 on route geometry against hand-worked figures (a straight line
+on the equator, a corner, before the start and past the end), 26 offline (models, filters, the 84-category table generated from
 Apple's header, the run-loop-backed completer's shape) and 19 live against
 MapKit, run with `PLACES_LIVE=1 swift test --filter LiveTests`. The live
 suite is where the numbers in this README come from — `.required` staying
@@ -155,7 +174,7 @@ surfaces as `PlacesError.throttled`.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/arraypress/swift-places.git", from: "0.1.0")
+.package(url: "https://github.com/arraypress/swift-places.git", from: "0.2.0")
 ```
 
 ## Licence
